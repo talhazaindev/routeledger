@@ -25,6 +25,7 @@ See [ASSUMPTIONS.md](ASSUMPTIONS.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DESIG
 | --- | --- |
 | `OPENROUTESERVICE_API_KEY` | [HeiGIT account](https://account.heigit.org/) — free Standard plan |
 | `ORS_BASE_URL` | Must be `https://api.heigit.org/openrouteservice` |
+| `ORS_GEOCODE_BASE_URL` | Must be `https://api.heigit.org/pelias/v1` (geocoding moved off `/geocode`) |
 
 **Verified Standard quotas (2026):** Directions 2,000/day · 40/min; Geocoding 3,000/day · 100/min; max driving distance 6,000 km.
 

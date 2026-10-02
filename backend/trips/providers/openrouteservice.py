@@ -24,16 +24,24 @@ PROFILE = "driving-hgv"
 
 
 class OpenRouteServiceProvider:
-    """HeiGIT api.heigit.org client. API key never leaves the server."""
+    """HeiGIT api.heigit.org client. API key never leaves the server.
+
+    Routing:  https://api.heigit.org/openrouteservice/v2/directions/...
+    Geocode:  https://api.heigit.org/pelias/v1/autocomplete
+    """
 
     def __init__(
         self,
         api_key: str | None = None,
         base_url: str | None = None,
+        geocode_base_url: str | None = None,
         timeout_s: float | None = None,
     ) -> None:
         self.api_key = api_key if api_key is not None else settings.ORS_API_KEY
         self.base_url = (base_url or settings.ORS_BASE_URL).rstrip("/")
+        self.geocode_base_url = (
+            geocode_base_url or getattr(settings, "ORS_GEOCODE_BASE_URL", "https://api.heigit.org/pelias/v1")
+        ).rstrip("/")
         self.timeout_s = timeout_s if timeout_s is not None else settings.ORS_TIMEOUT_S
         if not self.api_key:
             raise ProviderError(
@@ -54,11 +62,13 @@ class OpenRouteServiceProvider:
         method: str,
         path: str,
         *,
+        base_url: str | None = None,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
         retries: int = 2,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}{path}"
+        root = (base_url or self.base_url).rstrip("/")
+        url = f"{root}{path}"
         last_err: Exception | None = None
         for attempt in range(retries + 1):
             try:
@@ -107,19 +117,20 @@ class OpenRouteServiceProvider:
         q = query.strip()
         if len(q) < 2:
             return []
-        cache_key = f"geo:v1:{hashlib.sha256(q.lower().encode()).hexdigest()}:{limit}"
+        cache_key = f"geo:v2:{hashlib.sha256(q.lower().encode()).hexdigest()}:{limit}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
         data = self._request(
             "GET",
-            "/geocode/autocomplete",
+            "/autocomplete",
+            base_url=self.geocode_base_url,
             params={
                 "text": q,
                 "size": limit,
-                "boundary.country": "US",
-                "layers": "locality,borough,county,neighbourhood,address",
+                "boundary.country": "USA",
+                "layers": "locality,borough,county,neighbourhood,address,localadmin",
             },
         )
         results: list[GeocodeResult] = []
@@ -179,7 +190,7 @@ class OpenRouteServiceProvider:
             )
 
         cache_key = (
-            f"route:v1:{PROFILE}:{origin.lat:.5f},{origin.lon:.5f}:"
+            f"route:v2:{PROFILE}:{origin.lat:.5f},{origin.lon:.5f}:"
             f"{destination.lat:.5f},{destination.lon:.5f}"
         )
         cached = cache.get(cache_key)
@@ -204,27 +215,32 @@ class OpenRouteServiceProvider:
             "geometry": True,
             "elevation": False,
         }
+        # HeiGIT currently rejects /geojson path (406); use /json + decode polyline.
         data = self._request(
             "POST",
-            f"/v2/directions/{PROFILE}/geojson",
+            f"/v2/directions/{PROFILE}/json",
             json_body=body,
         )
-        features = data.get("features") or []
-        if not features:
+        routes = data.get("routes") or []
+        if not routes:
             raise NoRouteFound()
-        feature = features[0]
-        props = feature.get("properties") or {}
-        summary = props.get("summary") or {}
+        route = routes[0]
+        summary = route.get("summary") or {}
         distance_m = int(round(float(summary.get("distance") or 0)))
         duration_s = int(round(float(summary.get("duration") or 0)))
-        geometry = feature.get("geometry") or {}
-        coords_raw = geometry.get("coordinates") or []
-        geometry_lon_lat = tuple(
-            (float(c[0]), float(c[1])) for c in coords_raw if len(c) >= 2
-        )
-        segments = props.get("segments") or []
+        encoded = route.get("geometry") or ""
+        if isinstance(encoded, str):
+            geometry_lon_lat = tuple(_decode_polyline(encoded))
+        elif isinstance(encoded, dict):
+            coords_raw = encoded.get("coordinates") or []
+            geometry_lon_lat = tuple(
+                (float(c[0]), float(c[1])) for c in coords_raw if len(c) >= 2
+            )
+        else:
+            geometry_lon_lat = ()
+
         steps: list[RouteStep] = []
-        for seg in segments:
+        for seg in route.get("segments") or []:
             for step in seg.get("steps") or []:
                 way_pts = step.get("way_points") or [0, 0]
                 i0, i1 = int(way_pts[0]), int(way_pts[1])
@@ -254,6 +270,41 @@ class OpenRouteServiceProvider:
         )
         cache.set(cache_key, leg, timeout=3600)
         return leg
+
+
+def _decode_polyline(encoded: str, *, precision: int = 5) -> list[tuple[float, float]]:
+    """Decode Google-encoded polyline to (lon, lat) pairs used internally."""
+    coordinates: list[tuple[float, float]] = []
+    index = 0
+    lat = 0
+    lon = 0
+    factor = 10**precision
+    length = len(encoded)
+    while index < length:
+        result = 0
+        shift = 0
+        while True:
+            b = ord(encoded[index]) - 63
+            index += 1
+            result |= (b & 0x1F) << shift
+            shift += 5
+            if b < 0x20:
+                break
+        dlat = ~(result >> 1) if result & 1 else (result >> 1)
+        lat += dlat
+        result = 0
+        shift = 0
+        while True:
+            b = ord(encoded[index]) - 63
+            index += 1
+            result |= (b & 0x1F) << shift
+            shift += 5
+            if b < 0x20:
+                break
+        dlon = ~(result >> 1) if result & 1 else (result >> 1)
+        lon += dlon
+        coordinates.append((lon / factor, lat / factor))
+    return coordinates
 
 
 def _in_contiguous_us(lat: float, lon: float) -> bool:

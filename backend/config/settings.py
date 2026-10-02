@@ -144,6 +144,10 @@ ORS_API_KEY = os.environ.get("OPENROUTESERVICE_API_KEY", "")
 ORS_BASE_URL = os.environ.get(
     "ORS_BASE_URL", "https://api.heigit.org/openrouteservice"
 )
+# Geocoding moved to Pelias under the HeiGIT unified API
+ORS_GEOCODE_BASE_URL = os.environ.get(
+    "ORS_GEOCODE_BASE_URL", "https://api.heigit.org/pelias/v1"
+)
 ORS_PROFILE = "driving-hgv"
 ORS_TIMEOUT_S = float(os.environ.get("ORS_TIMEOUT_S", "20"))
 USE_FAKE_PROVIDER = os.environ.get("USE_FAKE_PROVIDER", "false").lower() in (

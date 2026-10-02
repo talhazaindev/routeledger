@@ -39,7 +39,13 @@ cd frontend && npm run build
 
 ## Live ORS smoke
 
-**Not run** — `OPENROUTESERVICE_API_KEY` unset. Use HeiGIT key and `USE_FAKE_PROVIDER=false` before assessment demo.
+**Passed 2026-10-02** with HeiGIT key configured:
+
+- Geocode via `https://api.heigit.org/pelias/v1/autocomplete`
+- Directions via `https://api.heigit.org/openrouteservice/v2/directions/driving-hgv/json` (`driving-hgv`)
+- Full `POST /api/trips/` Chicago → Joliet → Bloomington returned `Within modeled limits` with provider `openrouteservice-heigit`
+
+Note: HeiGIT `/geojson` directions path currently returns 406; adapter uses `/json` and decodes the polyline.
 
 ## Hosted production smoke
 
