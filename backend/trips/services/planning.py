@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -13,8 +12,6 @@ from django.conf import settings
 from trips.domain.constants import (
     CONTIGUOUS_US_LAT,
     CONTIGUOUS_US_LON,
-    CYCLE_LIMIT_S,
-    FUEL_INTERVAL_M,
     RULE_VERSION,
     SCHEMA_VERSION,
 )
