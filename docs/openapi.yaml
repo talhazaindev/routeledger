@@ -1,0 +1,138 @@
+openapi: 3.0.3
+info:
+  title: RouteLedger API
+  version: "1.0.0"
+  description: US trucking trip planner with planned daily logs
+paths:
+  /api/health/:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: Ready
+  /api/locations/search/:
+    get:
+      summary: Location autocomplete
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          required: true
+      responses:
+        "200":
+          description: Search results
+        "429":
+          description: Quota exceeded
+  /api/trips/:
+    post:
+      summary: Create immutable trip plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TripCreateRequest"
+      responses:
+        "201":
+          description: Plan created
+        "400":
+          description: Validation or no route
+        "429":
+          description: Upstream quota
+        "502":
+          description: Upstream failure
+        "503":
+          description: Upstream unavailable
+  /api/trips/{id}/:
+    get:
+      summary: Load trip plan
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: header
+          name: Authorization
+          required: true
+          schema:
+            type: string
+          description: "Bearer <access_token>"
+      responses:
+        "200":
+          description: Plan snapshot
+        "401":
+          description: Missing token
+        "404":
+          description: Not found or unauthorized
+components:
+  schemas:
+    TripCreateRequest:
+      type: object
+      required:
+        - current_location
+        - pickup_location
+        - dropoff_location
+        - cycle_used_hours
+        - departure_local
+      properties:
+        current_location:
+          $ref: "#/components/schemas/LocationInput"
+        pickup_location:
+          $ref: "#/components/schemas/LocationInput"
+        dropoff_location:
+          $ref: "#/components/schemas/LocationInput"
+        cycle_used_hours:
+          type: number
+          minimum: 0
+          maximum: 70
+        departure_local:
+          type: string
+          format: date-time
+        home_terminal_tz:
+          type: string
+          default: America/Chicago
+        miles_since_fuel:
+          type: number
+          minimum: 0
+          maximum: 1000
+        fuel_duration_minutes:
+          type: number
+          default: 30
+        include_pretrip_inspection:
+          type: boolean
+          default: false
+        rest_status:
+          type: string
+          enum: [OFF, SB]
+        sleeper_equipped:
+          type: boolean
+    LocationInput:
+      type: object
+      required: [label, coordinates]
+      properties:
+        label:
+          type: string
+        coordinates:
+          type: object
+          required: [lat, lon]
+          properties:
+            lat:
+              type: number
+            lon:
+              type: number
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        field_errors:
+          type: object
+        retryable:
+          type: boolean
+        request_id:
+          type: string
