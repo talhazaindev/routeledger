@@ -117,7 +117,7 @@ RouteLedger/
 ├── frontend/         # Vite React app
 ├── docs/             # OpenAPI spec
 ├── docker-compose.yml
-├── Dockerfile        # API image
+├── backend/Dockerfile  # API image
 └── .env.example
 ```
 
