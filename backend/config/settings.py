@@ -7,15 +7,23 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+_BASE = Path(__file__).resolve().parent.parent
+# Local monorepo: repo-root/.env · Vercel (root=backend): backend/.env or dashboard env
+load_dotenv(_BASE.parent / ".env")
+load_dotenv(_BASE / ".env")
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = _BASE
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-change-me")
 DEBUG = os.environ.get("DJANGO_DEBUG", "true").lower() in ("1", "true", "yes")
 ALLOWED_HOSTS = [
     h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()
 ]
+# Vercel preview/production hostnames
+if os.environ.get("VERCEL"):
+    for host in (".vercel.app", ".now.sh"):
+        if host not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(host)
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -65,7 +73,21 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if DATABASE_URL:
     import dj_database_url
 
-    DATABASES = {"default": dj_database_url.parse(DATABASE_URL, conn_max_age=600)}
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=os.environ.get("VERCEL") == "1",
+        )
+    }
+elif os.environ.get("VERCEL"):
+    # Ephemeral fallback — prefer Neon DATABASE_URL in production
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": "/tmp/routeledger.sqlite3",
+        }
+    }
 else:
     DATABASES = {
         "default": {
@@ -97,7 +119,8 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {
     "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        # Manifest storage breaks when hashes drift across serverless builds
+        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
 }
 

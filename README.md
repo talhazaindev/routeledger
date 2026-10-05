@@ -83,28 +83,45 @@ Detailed contract: [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Deployment
 
-Deploy the **frontend on Vercel** and the **API** on a Django host (PythonAnywhere, Render, etc.). Do not run the Django Docker image as the Vercel frontend project.
+Deploy **two Vercel projects** from the same GitHub repo (preferred) — or host the API elsewhere.
 
-### 1. Backend (PythonAnywhere / Render)
+### 1. Backend API (Vercel project #2)
 
-Current production API: `https://devdota.pythonanywhere.com`
+1. [Import](https://vercel.com/new) `talhazaindev/routeledger` again as a **new** project.
+2. **Project name:** `routeledger-api` (so the URL is `https://routeledger-api.vercel.app`).
+3. **Root Directory:** `backend`
+4. Framework: **Django** / Python (auto-detect `manage.py`).
+5. Env vars (Project → Settings → Environment Variables):
 
-Set on the API host:
-- `OPENROUTESERVICE_API_KEY`
-- `DJANGO_ALLOWED_HOSTS` — API hostname
-- `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` — Vercel origin (`https://routeledger-nine.vercel.app`)
+| Key | Value |
+|-----|--------|
+| `DJANGO_SECRET_KEY` | long random string |
+| `DJANGO_DEBUG` | `false` |
+| `DJANGO_ALLOWED_HOSTS` | `.vercel.app` |
+| `CORS_ALLOWED_ORIGINS` | `https://routeledger-nine.vercel.app` |
+| `CSRF_TRUSTED_ORIGINS` | `https://routeledger-nine.vercel.app` |
+| `OPENROUTESERVICE_API_KEY` | your HeiGIT key |
+| `ORS_BASE_URL` | `https://api.heigit.org/openrouteservice` |
+| `ORS_GEOCODE_BASE_URL` | `https://api.heigit.org/pelias/v1` |
+| `USE_FAKE_PROVIDER` | `false` |
+| `DATABASE_URL` | Neon Postgres URL (recommended; free at [neon.tech](https://neon.tech)) |
 
-[`render.yaml`](render.yaml) is an alternate Render Blueprint if you prefer that host.
+6. Deploy, then open `https://routeledger-api.vercel.app/api/health/`.
 
-### 2. Frontend (Vercel)
+[`backend/vercel.json`](backend/vercel.json) sets `maxDuration` to 60s for routing/geocode.
 
-Root [`vercel.json`](vercel.json) builds `frontend/` and proxies `/api/*` to the Django host:
+Without `DATABASE_URL`, the API uses ephemeral `/tmp` SQLite (OK for a quick demo; trips may not survive cold starts). Prefer Neon.
+
+### 2. Frontend (Vercel project #1)
+
+Existing UI: `https://routeledger-nine.vercel.app`  
+Root [`vercel.json`](vercel.json) proxies `/api/*` to the API project:
 
 ```json
-"destination": "https://devdota.pythonanywhere.com/api/$1"
+"destination": "https://routeledger-api.vercel.app/api/$1"
 ```
 
-Production UI: `https://routeledger-nine.vercel.app`
+If Vercel assigns a longer hostname (e.g. `routeledger-api-xxx.vercel.app`), update both `vercel.json` files to that URL and push.
 
 ## Project layout
 

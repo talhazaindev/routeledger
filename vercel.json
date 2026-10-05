@@ -7,7 +7,7 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://devdota.pythonanywhere.com/api/$1"
+      "destination": "https://routeledger-api.vercel.app/api/$1"
     },
     {
       "source": "/(.*)",
