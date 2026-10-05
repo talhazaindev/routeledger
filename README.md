@@ -83,31 +83,28 @@ Detailed contract: [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Deployment
 
-Deploy the **frontend on Vercel** and the **API on Render**. Do not deploy the repo root to Vercel — the root `Dockerfile` is for the Django API and will crash there (wrong port / no DB).
+Deploy the **frontend on Vercel** and the **API** on a Django host (PythonAnywhere, Render, etc.). Do not run the Django Docker image as the Vercel frontend project.
 
-### 1. Backend (Render)
+### 1. Backend (PythonAnywhere / Render)
 
-[`render.yaml`](render.yaml) defines a web service (`backend/`) and PostgreSQL database.
+Current production API: `https://devdota.pythonanywhere.com`
 
-1. Create a new Render Blueprint from this repo (or connect the repo and use `render.yaml`).
-2. In the Render dashboard, set:
-   - `OPENROUTESERVICE_API_KEY`
-   - `DJANGO_ALLOWED_HOSTS` — your Render hostname (e.g. `routeledger-api.onrender.com`)
-   - `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` — your Vercel origin (e.g. `https://routeledger-six.vercel.app`)
-3. Note the public API URL (e.g. `https://routeledger-api.onrender.com`).
+Set on the API host:
+- `OPENROUTESERVICE_API_KEY`
+- `DJANGO_ALLOWED_HOSTS` — API hostname
+- `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` — Vercel origin (`https://routeledger-nine.vercel.app`)
+
+[`render.yaml`](render.yaml) is an alternate Render Blueprint if you prefer that host.
 
 ### 2. Frontend (Vercel)
 
-1. Import the repo in Vercel.
-2. Set **Root Directory** to `frontend` (Framework Preset: Vite).
-3. Build command: `npm run build` · Output: `dist`.
-4. In [`frontend/vercel.json`](frontend/vercel.json), replace `REPLACE_WITH_RENDER_HOST` with your Render hostname (no trailing slash), then redeploy. Example:
+Root [`vercel.json`](vercel.json) builds `frontend/` and proxies `/api/*` to the Django host:
 
-   ```json
-   "destination": "https://routeledger-api.onrender.com/api/$1"
-   ```
+```json
+"destination": "https://devdota.pythonanywhere.com/api/$1"
+```
 
-API calls from the UI (`/api/...`) are proxied to Render via that rewrite.
+Production UI: `https://routeledger-nine.vercel.app`
 
 ## Project layout
 
