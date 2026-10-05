@@ -14,6 +14,7 @@ from .constants import (
     BREAK_REQUIRED_S,
     CYCLE_LIMIT_S,
     CYCLE_RESTART_S,
+    CYCLE_WINDOW_DAYS,
     DAILY_REST_S,
     DROPOFF_DURATION_S,
     FUEL_INTERVAL_M,
@@ -24,6 +25,8 @@ from .constants import (
     SECONDS_PER_DAY,
     SHIFT_DRIVING_LIMIT_S,
     SHIFT_WINDOW_LIMIT_S,
+    SPLIT_SLEEPER_LONG_S,
+    SPLIT_SLEEPER_SHORT_MIN_S,
 )
 from .explanations import explain_event
 from .progress import ProgressIndex, build_progress_index
@@ -120,7 +123,17 @@ class UnsupportedTripError(ValueError):
 class SchedulerState:
     """Mutable working state during scheduling."""
 
-    def __init__(self, initial: DriverState, now: datetime) -> None:
+    def __init__(
+        self,
+        initial: DriverState,
+        now: datetime,
+        *,
+        home_terminal_tz: str,
+        cycle_mode: str,
+        cycle_day_buckets: list[int],
+        cycle_bucket_date,
+        use_split_sleeper: bool,
+    ) -> None:
         self.cycle_used_s = initial.cycle_used_s
         self.shift_driving_s = initial.shift_driving_s
         self.shift_elapsed_s = initial.shift_elapsed_s
@@ -133,6 +146,13 @@ class SchedulerState:
         self.events: list[TimelineEvent] = []
         self.route_progress_m = 0
         self.non_driving_streak_s = 0  # consecutive non-driving for break qualification
+        self.home_terminal_tz = home_terminal_tz
+        self.cycle_mode = cycle_mode
+        self.cycle_day_buckets = cycle_day_buckets
+        self.cycle_bucket_date = cycle_bucket_date
+        self.use_split_sleeper = use_split_sleeper
+        self.split_pending_short = False
+        self.split_long_duration_s = 0
 
     def as_driver(self) -> DriverState:
         return DriverState(
@@ -182,6 +202,65 @@ class SchedulerState:
         if self.shift_window_open:
             self.shift_elapsed_s += duration_s
 
+    def reset_shift_clocks(self) -> None:
+        self.shift_driving_s = 0
+        self.shift_elapsed_s = 0
+        self.driving_since_break_s = 0
+        self.shift_window_open = False
+        self.shift_window_start = None
+
+    def clear_cycle(self) -> None:
+        self.cycle_used_s = 0
+        if self.cycle_mode == "rolling_history":
+            self.cycle_day_buckets = [0]
+            # Keep cycle_bucket_date as the current terminal day
+        self.split_pending_short = False
+        self.split_long_duration_s = 0
+
+    def ensure_cycle_day(self, day) -> None:
+        """Advance rolling buckets to ``day`` (terminal calendar date)."""
+        if self.cycle_mode != "rolling_history":
+            return
+        if self.cycle_bucket_date is None:
+            self.cycle_bucket_date = day
+            if not self.cycle_day_buckets:
+                self.cycle_day_buckets = [0]
+            return
+        while self.cycle_bucket_date < day:
+            self.cycle_bucket_date = self.cycle_bucket_date + timedelta(days=1)
+            self.cycle_day_buckets.append(0)
+            while len(self.cycle_day_buckets) > CYCLE_WINDOW_DAYS:
+                self.cycle_day_buckets.pop(0)
+            self.cycle_used_s = sum(self.cycle_day_buckets)
+
+    def add_cycle_duty(self, duration_s: int, start_utc: datetime) -> None:
+        """Accrue on-duty (D/ON) seconds toward the 70/8 cycle."""
+        if duration_s <= 0:
+            return
+        if self.cycle_mode != "rolling_history":
+            self.cycle_used_s += duration_s
+            return
+
+        from datetime import time as time_cls
+
+        tz = ZoneInfo(self.home_terminal_tz)
+        remaining = duration_s
+        cursor = start_utc
+        while remaining > 0:
+            local = cursor.astimezone(tz)
+            day = local.date()
+            self.ensure_cycle_day(day)
+            next_midnight_local = datetime.combine(
+                day + timedelta(days=1), time_cls.min, tzinfo=tz
+            )
+            next_midnight_utc = next_midnight_local.astimezone(timezone.utc)
+            until_midnight = max(0, int((next_midnight_utc - cursor).total_seconds()))
+            chunk = min(remaining, until_midnight if until_midnight > 0 else remaining)
+            self.cycle_day_buckets[-1] += chunk
+            remaining -= chunk
+            cursor = cursor + timedelta(seconds=chunk)
+        self.cycle_used_s = sum(self.cycle_day_buckets)
+
 
 def schedule_trip(
     legs: list[RouteLeg],
@@ -196,6 +275,19 @@ def schedule_trip(
         raise ValueError("miles_since_fuel_m must be in [0, 1000 miles]")
     if settings.cycle_used_s < 0 or settings.cycle_used_s > CYCLE_LIMIT_S:
         raise ValueError("cycle_used_s must be in [0, 70h]")
+    if settings.split_sleeper and not (
+        settings.sleeper_equipped and settings.rest_status == DutyStatus.SB
+    ):
+        raise ValueError("split_sleeper requires sleeper_equipped and rest_status=SB")
+
+    history = settings.cycle_daily_history_s
+    if history is not None:
+        if not (1 <= len(history) <= CYCLE_WINDOW_DAYS):
+            raise ValueError("cycle_daily_history_s must have length 1..8")
+        if any(h < 0 for h in history):
+            raise ValueError("cycle_daily_history_s values must be non-negative")
+        if sum(history) != settings.cycle_used_s:
+            raise ValueError("cycle_daily_history_s must sum to cycle_used_s")
 
     departure = settings.departure_local
     if departure.tzinfo is None:
@@ -210,7 +302,29 @@ def schedule_trip(
         fresh_shift=True,
         shift_window_open=False,
     )
-    state = SchedulerState(initial, departure.astimezone(timezone.utc))
+
+    if history is not None:
+        cycle_mode = "rolling_history"
+        cycle_buckets = list(history)
+    else:
+        cycle_mode = "conservative_estimate"
+        cycle_buckets = [settings.cycle_used_s]
+
+    use_split = bool(
+        settings.split_sleeper
+        and settings.sleeper_equipped
+        and settings.rest_status == DutyStatus.SB
+    )
+
+    state = SchedulerState(
+        initial,
+        departure.astimezone(timezone.utc),
+        home_terminal_tz=settings.home_terminal_tz,
+        cycle_mode=cycle_mode,
+        cycle_day_buckets=cycle_buckets,
+        cycle_bucket_date=departure.date(),
+        use_split_sleeper=use_split,
+    )
     progress = build_progress_index(legs)
 
     rest_status = (
@@ -385,6 +499,10 @@ def schedule_trip(
         if later_driving and state.max_driving_s() <= 0:
             _insert_required_rest(state, settings, rest_status, progress)
 
+    # Complete a pending §395.1(g) split-sleeper companion if the trip ended mid-pair
+    if state.split_pending_short:
+        _insert_required_rest(state, settings, rest_status, progress)
+
     # Ensure DST policy for the whole trip span
     if state.events:
         _assert_no_dst_issues(
@@ -394,8 +512,9 @@ def schedule_trip(
         )
 
     diagnostics: dict[str, Any] = {
-        "cycle_mode": "conservative_estimate",
-        "rule_version": "hos-property-carrying-70-8-v1",
+        "cycle_mode": state.cycle_mode,
+        "rule_version": "hos-property-carrying-70-8-v2",
+        "split_sleeper": use_split,
         "total_driving_s": sum(
             e.duration_s for e in state.events if e.status == DutyStatus.D
         ),
@@ -405,6 +524,7 @@ def schedule_trip(
         "total_distance_m": progress.total_m,
         "event_count": len(state.events),
         "completion_utc": state.events[-1].end_utc.isoformat() if state.events else None,
+        "cycle_day_buckets_s": list(state.cycle_day_buckets) if state.cycle_mode == "rolling_history" else None,
     }
 
     events = tuple(state.events)
@@ -452,7 +572,7 @@ def _emit_driving(
 
     state.shift_driving_s += duration_s
     state.driving_since_break_s += duration_s
-    state.cycle_used_s += duration_s
+    state.add_cycle_duty(duration_s, start)
     state.miles_since_fuel_m += distance_m
     state.apply_elapsed(duration_s)
     state.continuous_rest_s = 0
@@ -505,7 +625,7 @@ def _emit_service(
     end = start + timedelta(seconds=duration_s)
 
     if status in (DutyStatus.ON, DutyStatus.D):
-        state.cycle_used_s += duration_s
+        state.add_cycle_duty(duration_s, start)
     if status == DutyStatus.D:
         state.shift_driving_s += duration_s
         state.driving_since_break_s += duration_s
@@ -592,20 +712,16 @@ def _insert_required_rest(
     rest_status: DutyStatus,
     progress: ProgressIndex,
 ) -> None:
-    """Insert daily rest or cycle restart. Extends continuous OFF/SB; never ON."""
+    """Insert 30m break, daily rest, split-sleeper period, or cycle restart."""
     coord = _coord_at(progress, state.route_progress_m)
     label = "Planned rest area along route — facility not verified"
 
     need_restart = state.remaining_cycle_driving_s() <= 0
-    # Also restart if we cannot finish meaningful work without it and cycle is exhausted
     if need_restart:
-        # Extend continuous rest to 34h total
         already = state.continuous_rest_s
-        # If currently in a non-rest status streak, continuous_rest may be 0
         needed = max(0, CYCLE_RESTART_S - already)
         if needed == 0:
             needed = CYCLE_RESTART_S
-        # If we already have some continuous rest from prior OFF, only add the remainder
         if already > 0 and already < CYCLE_RESTART_S:
             needed = CYCLE_RESTART_S - already
         _emit_rest(
@@ -616,37 +732,108 @@ def _insert_required_rest(
             reasons=(ReasonCode.CYCLE_RESTART,),
             label=label,
             coord=coord,
+            reset_cycle=True,
         )
-        # Qualifying 34h restart resets cycle
-        state.cycle_used_s = 0
-        state.shift_driving_s = 0
-        state.shift_elapsed_s = 0
-        state.driving_since_break_s = 0
-        state.shift_window_open = False
-        state.shift_window_start = None
-        state.continuous_rest_s = CYCLE_RESTART_S
         return
 
-    # Daily 10-hour rest (does not reset cycle)
+    # R29: when only the 8h break clock is binding, insert ~30m — not a 10h rest.
+    only_break = (
+        state.remaining_before_break_s() <= 0
+        and state.non_driving_streak_s < BREAK_REQUIRED_S
+        and state.remaining_shift_driving_s() > 0
+        and state.remaining_window_s() > 0
+    )
+    if only_break:
+        need = BREAK_REQUIRED_S - state.non_driving_streak_s
+        if need <= 0:
+            need = BREAK_REQUIRED_S
+        _emit_service(
+            state,
+            event_type=EventType.BREAK,
+            status=rest_status,
+            duration_s=need,
+            reasons=(ReasonCode.BREAK_AFTER_DRIVING,),
+            label=label,
+            coord=coord,
+            provenance=LocationProvenance.PLANNED_UNVERIFIED,
+            leg_id=None,
+        )
+        return
+
+    # §395.1(g) split sleeper: 7h SB then later ≥2h (we use 3h so pair totals ≥10h)
+    if state.use_split_sleeper and rest_status == DutyStatus.SB:
+        if state.split_pending_short:
+            companion = max(
+                SPLIT_SLEEPER_SHORT_MIN_S,
+                DAILY_REST_S - state.split_long_duration_s,
+            )
+            reasons: list[ReasonCode] = [
+                ReasonCode.SPLIT_SLEEPER_SHORT,
+                ReasonCode.DAILY_REST,
+            ]
+            if state.remaining_shift_driving_s() <= 0:
+                reasons.append(ReasonCode.SHIFT_DRIVING_LIMIT)
+            if state.remaining_window_s() <= 0:
+                reasons.append(ReasonCode.SHIFT_WINDOW_LIMIT)
+            _emit_rest(
+                state,
+                duration_s=companion,
+                status=DutyStatus.SB,
+                event_type=EventType.REST,
+                reasons=tuple(dict.fromkeys(reasons)),
+                label=label,
+                coord=coord,
+                exclude_from_window=True,
+            )
+            state.split_pending_short = False
+            state.split_long_duration_s = 0
+            state.reset_shift_clocks()
+            state.continuous_rest_s = max(state.continuous_rest_s, DAILY_REST_S)
+            # Patch end clocks after shift reset
+            last = state.events[-1]
+            state.events[-1] = replace(last, clocks_at_end=_snapshot(state.as_driver()))
+            return
+
+        reasons = [ReasonCode.SPLIT_SLEEPER_LONG, ReasonCode.DAILY_REST]
+        if state.remaining_shift_driving_s() <= 0:
+            reasons.append(ReasonCode.SHIFT_DRIVING_LIMIT)
+        if state.remaining_window_s() <= 0:
+            reasons.append(ReasonCode.SHIFT_WINDOW_LIMIT)
+        _emit_rest(
+            state,
+            duration_s=SPLIT_SLEEPER_LONG_S,
+            status=DutyStatus.SB,
+            event_type=EventType.REST,
+            reasons=tuple(dict.fromkeys(reasons)),
+            label=label,
+            coord=coord,
+            exclude_from_window=True,
+        )
+        state.split_pending_short = True
+        state.split_long_duration_s = SPLIT_SLEEPER_LONG_S
+        # End of first qualifying period starts a new 11/14 calculation window
+        state.reset_shift_clocks()
+        state.driving_since_break_s = 0
+        state.non_driving_streak_s = 0
+        last = state.events[-1]
+        state.events[-1] = replace(last, clocks_at_end=_snapshot(state.as_driver()))
+        return
+
+    # Consecutive 10-hour rest (does not reset cycle)
     already = state.continuous_rest_s
-    needed = max(DAILY_REST_S - already, DAILY_REST_S) if already < DAILY_REST_S else DAILY_REST_S
     if already >= DAILY_REST_S:
-        # Already rested somehow — still need a fresh 10h block from now for shift reset
         needed = DAILY_REST_S
         already_for_extend = 0
     else:
         needed = DAILY_REST_S - already
         already_for_extend = already
 
-    reasons: list[ReasonCode] = [ReasonCode.DAILY_REST]
+    reasons = [ReasonCode.DAILY_REST]
     if state.remaining_shift_driving_s() <= 0:
         reasons.append(ReasonCode.SHIFT_DRIVING_LIMIT)
     if state.remaining_window_s() <= 0:
         reasons.append(ReasonCode.SHIFT_WINDOW_LIMIT)
-    if state.remaining_before_break_s() <= 0 and state.non_driving_streak_s < BREAK_REQUIRED_S:
-        reasons.append(ReasonCode.BREAK_AFTER_DRIVING)
 
-    # Prefer combining: 10h rest also satisfies break
     _emit_rest(
         state,
         duration_s=needed if already_for_extend > 0 else DAILY_REST_S,
@@ -656,13 +843,10 @@ def _insert_required_rest(
         label=label,
         coord=coord,
     )
-    state.shift_driving_s = 0
-    state.shift_elapsed_s = 0
-    state.driving_since_break_s = 0
-    state.shift_window_open = False
-    state.shift_window_start = None
+    state.reset_shift_clocks()
     state.continuous_rest_s = max(state.continuous_rest_s, DAILY_REST_S)
-    # Cycle NOT reset
+    last = state.events[-1]
+    state.events[-1] = replace(last, clocks_at_end=_snapshot(state.as_driver()))
 
 
 def _emit_rest(
@@ -674,6 +858,8 @@ def _emit_rest(
     reasons: tuple[ReasonCode, ...],
     label: str,
     coord: Coordinates | None,
+    reset_cycle: bool = False,
+    exclude_from_window: bool = False,
 ) -> None:
     if duration_s <= 0:
         raise ValueError("rest duration must be positive")
@@ -681,23 +867,33 @@ def _emit_rest(
     start = state.now
     end = start + timedelta(seconds=duration_s)
 
-    # Rest does not open/advance the 14h window in a meaningful "on duty" way;
-    # if window was open, elapsed continues only for on-duty — FMCSA: 14h is
-    # consecutive hours from first on-duty, including off-duty short breaks.
-    # Ordinary short breaks do NOT pause it; a qualifying 10h rest ends the day.
-    # During a qualifying rest we close the window rather than accumulate.
+    # Rest does not open the window. Qualifying 10h rest ends the day.
+    # Short rests inside an open window consume it unless excluded (split sleeper).
     state.non_driving_streak_s += duration_s
     state.continuous_rest_s += duration_s
     if state.non_driving_streak_s >= BREAK_REQUIRED_S:
         state.driving_since_break_s = 0
-    # Qualifying rest ends the shift window
-    if duration_s + (start_clocks.continuous_rest_s) >= DAILY_REST_S or duration_s >= DAILY_REST_S:
+
+    qualifies_daily = (
+        duration_s + start_clocks.continuous_rest_s >= DAILY_REST_S
+        or duration_s >= DAILY_REST_S
+    )
+    if exclude_from_window:
+        # Paired sleeper periods are excluded from the 14h window
+        pass
+    elif qualifies_daily or event_type == EventType.RESTART:
         state.shift_window_open = False
         state.shift_elapsed_s = 0
         state.shift_driving_s = 0
     elif state.shift_window_open:
-        # Short rest inside window still consumes window
         state.apply_elapsed(duration_s)
+
+    if reset_cycle:
+        state.clear_cycle()
+        state.reset_shift_clocks()
+        state.continuous_rest_s = CYCLE_RESTART_S
+        state.non_driving_streak_s = 0
+        state.driving_since_break_s = 0
 
     state.now = end
     end_clocks = _snapshot(state.as_driver())

@@ -19,6 +19,7 @@ from .types import (
     DutyStatus,
     EventType,
     PlanningSettings,
+    ReasonCode,
     TimelineEvent,
     ValidationResult,
 )
@@ -64,6 +65,15 @@ def validate_timeline(
 
     # Replay clocks
     cycle_used = settings.cycle_used_s if settings else 0
+    cycle_mode = "conservative_estimate"
+    cycle_buckets: list[int] = [cycle_used]
+    cycle_bucket_date = None
+    tz_name = settings.home_terminal_tz if settings else "UTC"
+    if settings and settings.cycle_daily_history_s is not None:
+        cycle_mode = "rolling_history"
+        cycle_buckets = list(settings.cycle_daily_history_s)
+        cycle_used = sum(cycle_buckets)
+
     shift_driving = 0
     shift_elapsed = 0
     driving_since_break = 0
@@ -72,6 +82,53 @@ def validate_timeline(
     window_open = False
     non_driving_streak = 0
     max_miles_since_fuel = miles_since_fuel
+
+    def _roll_to_day(day) -> None:
+        nonlocal cycle_used, cycle_bucket_date, cycle_buckets
+        if cycle_mode != "rolling_history":
+            return
+        from datetime import timedelta
+
+        if cycle_bucket_date is None:
+            cycle_bucket_date = day
+            return
+        while cycle_bucket_date < day:
+            cycle_bucket_date = cycle_bucket_date + timedelta(days=1)
+            cycle_buckets.append(0)
+            while len(cycle_buckets) > 8:
+                cycle_buckets.pop(0)
+            cycle_used = sum(cycle_buckets)
+
+    def _add_cycle(duration_s: int, start_utc) -> None:
+        nonlocal cycle_used
+        if cycle_mode != "rolling_history" or settings is None:
+            cycle_used += duration_s
+            return
+        from datetime import time as time_cls, timedelta
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name)
+        remaining = duration_s
+        cursor = start_utc
+        while remaining > 0:
+            local = cursor.astimezone(tz)
+            day = local.date()
+            _roll_to_day(day)
+            next_midnight_local = __import__("datetime").datetime.combine(
+                day + timedelta(days=1), time_cls.min, tzinfo=tz
+            )
+            next_midnight_utc = next_midnight_local.astimezone(start_utc.tzinfo)
+            until = max(0, int((next_midnight_utc - cursor).total_seconds()))
+            chunk = min(remaining, until if until > 0 else remaining)
+            cycle_buckets[-1] += chunk
+            remaining -= chunk
+            cursor = cursor + timedelta(seconds=chunk)
+        cycle_used = sum(cycle_buckets)
+
+    if settings is not None:
+        cycle_bucket_date = settings.departure_local.astimezone(
+            __import__("zoneinfo").ZoneInfo(tz_name)
+        ).date()
 
     for ev in events:
         if ev.status == DutyStatus.D:
@@ -96,11 +153,6 @@ def validate_timeline(
                     f"driving exceeds 70h cycle at {ev.event_id}: "
                     f"{cycle_used + ev.duration_s}s"
                 )
-            if miles_since_fuel + ev.distance_m > FUEL_INTERVAL_M + 1:
-                # Allow equality at end of trip; only error if overshot mid-route
-                # Strict: any driving that ends above interval is invalid unless
-                # this is the final driving and no further drive follows — checked later
-                pass
 
             if not window_open:
                 window_open = True
@@ -110,7 +162,7 @@ def validate_timeline(
 
             shift_driving += ev.duration_s
             driving_since_break += ev.duration_s
-            cycle_used += ev.duration_s
+            _add_cycle(ev.duration_s, ev.start_utc)
             miles_since_fuel += ev.distance_m
             max_miles_since_fuel = max(max_miles_since_fuel, miles_since_fuel)
             shift_elapsed += ev.duration_s
@@ -122,7 +174,7 @@ def validate_timeline(
                 window_open = True
                 shift_elapsed = 0
                 # ON work can start a window; driving clocks stay 0
-            cycle_used += ev.duration_s
+            _add_cycle(ev.duration_s, ev.start_utc)
             shift_elapsed += ev.duration_s
             continuous_rest = 0
             non_driving_streak += ev.duration_s
@@ -137,10 +189,14 @@ def validate_timeline(
             continuous_rest += ev.duration_s
             if non_driving_streak >= BREAK_REQUIRED_S:
                 driving_since_break = 0
+            exclude_window = ReasonCode.SPLIT_SLEEPER_LONG in ev.reason_codes or (
+                ReasonCode.SPLIT_SLEEPER_SHORT in ev.reason_codes
+            )
             if continuous_rest >= CYCLE_RESTART_S or (
                 ev.event_type == EventType.RESTART and continuous_rest >= CYCLE_RESTART_S - 1
             ):
                 cycle_used = 0
+                cycle_buckets = [0]
                 shift_driving = 0
                 shift_elapsed = 0
                 driving_since_break = 0
@@ -148,11 +204,16 @@ def validate_timeline(
             elif continuous_rest >= DAILY_REST_S or ev.duration_s >= DAILY_REST_S:
                 # 10h rest resets shift, not cycle
                 if ev.duration_s >= DAILY_REST_S or continuous_rest >= DAILY_REST_S:
-                    # Detect false cycle reset claim: 10h must NOT zero cycle unless restart
                     shift_driving = 0
                     shift_elapsed = 0
                     driving_since_break = 0
                     window_open = False
+            elif exclude_window:
+                # Split sleeper periods excluded from 14h; calculation restarts after
+                shift_driving = 0
+                shift_elapsed = 0
+                driving_since_break = 0
+                window_open = False
             elif window_open:
                 shift_elapsed += ev.duration_s
 

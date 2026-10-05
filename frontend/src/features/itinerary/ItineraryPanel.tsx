@@ -1,7 +1,7 @@
 import { DateTime } from "luxon";
+import { motion, useReducedMotion } from "framer-motion";
 import type { TimelineEvent, TripPlan } from "../../api/client";
-import { formatDuration, metersToMiles } from "../../lib/utils";
-import { cn } from "../../lib/utils";
+import { formatDuration, metersToMiles, cn } from "../../lib/utils";
 
 type Props = {
   plan: TripPlan;
@@ -17,7 +17,19 @@ const STATUS_STYLE: Record<string, string> = {
   ON: "bg-amber-100 text-amber-900",
 };
 
+const EVENT_DOT: Record<string, string> = {
+  PICKUP: "#0F766E",
+  DROPOFF: "#C2410C",
+  FUEL: "#CA8A04",
+  REST: "#7C3AED",
+  RESTART: "#6D28D9",
+  BREAK: "#64748B",
+  INSPECTION: "#2563EB",
+  DRIVING: "#1D4ED8",
+};
+
 export function ItineraryPanel({ plan, selectedEventId, onSelectEvent, homeTz }: Props) {
+  const reduce = useReducedMotion();
   const byDay = new Map<string, TimelineEvent[]>();
   for (const ev of plan.timeline) {
     const day = DateTime.fromISO(ev.start_utc, { zone: "utc" }).setZone(homeTz).toISODate() || "unknown";
@@ -26,10 +38,15 @@ export function ItineraryPanel({ plan, selectedEventId, onSelectEvent, homeTz }:
   }
 
   return (
-    <div className="space-y-4" role="list" aria-label="Trip itinerary">
-      {[...byDay.entries()].map(([day, events]) => (
-        <section key={day}>
-          <h3 className="mb-2 text-sm font-semibold text-text">{day}</h3>
+    <div className="space-y-5" role="list" aria-label="Trip itinerary">
+      {[...byDay.entries()].map(([day, events], dayIdx) => (
+        <motion.section
+          key={day}
+          initial={reduce ? false : { opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: reduce ? 0 : dayIdx * 0.05, duration: 0.3 }}
+        >
+          <h3 className="font-display mb-2.5 text-sm font-semibold text-ink">{day}</h3>
           <ul className="space-y-2">
             {events.map((ev) => {
               const start = DateTime.fromISO(ev.start_utc, { zone: "utc" }).setZone(homeTz);
@@ -41,15 +58,24 @@ export function ItineraryPanel({ plan, selectedEventId, onSelectEvent, homeTz }:
                     type="button"
                     onClick={() => onSelectEvent(ev.event_id)}
                     className={cn(
-                      "w-full rounded-[10px] border p-3 text-left transition",
-                      selected ? "border-action bg-teal-50" : "border-border bg-surface hover:border-action/40",
+                      "w-full rounded-xl border p-3.5 text-left transition",
+                      selected
+                        ? "border-action bg-action/5 shadow-[0_0_0_1px_rgba(15,118,110,0.2)]"
+                        : "border-border bg-surface hover:border-action/35 hover:shadow-sm",
                     )}
                   >
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", STATUS_STYLE[ev.status])}>
+                      <span className={cn("rounded-md px-2 py-0.5 text-xs font-medium", STATUS_STYLE[ev.status])}>
                         {ev.status}
                       </span>
-                      <span className="text-sm font-semibold">{ev.event_type.replaceAll("_", " ")}</span>
+                      <span className="inline-flex items-center gap-1.5 text-sm font-semibold">
+                        <span
+                          aria-hidden
+                          className="inline-block h-2.5 w-2.5 rounded-full"
+                          style={{ background: EVENT_DOT[ev.event_type] || "#526174" }}
+                        />
+                        {ev.event_type.replaceAll("_", " ")}
+                      </span>
                       <span className="text-xs text-muted">
                         {start.toFormat("HH:mm")}–{end.toFormat("HH:mm")} · {formatDuration(ev.duration_s)}
                       </span>
@@ -57,7 +83,7 @@ export function ItineraryPanel({ plan, selectedEventId, onSelectEvent, homeTz }:
                         <span className="text-xs text-muted">{metersToMiles(ev.distance_m).toFixed(1)} mi</span>
                       )}
                     </div>
-                    {ev.location_label && <p className="mt-1 text-sm text-muted">{ev.location_label}</p>}
+                    {ev.location_label && <p className="mt-1.5 text-sm text-muted">{ev.location_label}</p>}
                     <details className="mt-2">
                       <summary className="cursor-pointer text-xs font-medium text-action">Why this stop?</summary>
                       <p className="mt-1 text-xs text-muted">{ev.explanation}</p>
@@ -67,7 +93,7 @@ export function ItineraryPanel({ plan, selectedEventId, onSelectEvent, homeTz }:
               );
             })}
           </ul>
-        </section>
+        </motion.section>
       ))}
     </div>
   );

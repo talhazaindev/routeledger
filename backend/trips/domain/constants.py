@@ -12,6 +12,10 @@ CYCLE_RESTART_S = 34 * 3600
 CYCLE_LIMIT_S = 70 * 3600
 CYCLE_WINDOW_DAYS = 8
 
+# Split sleeper (§395.1(g)): ≥7h SB paired with ≥2h OFF/SB, totaling ≥10h
+SPLIT_SLEEPER_LONG_S = 7 * 3600
+SPLIT_SLEEPER_SHORT_MIN_S = 2 * 3600
+
 # Service durations
 PICKUP_DURATION_S = 3600
 DROPOFF_DURATION_S = 3600
@@ -27,7 +31,7 @@ MAX_PLAN_DAYS = 21
 MAX_EVENTS = 400
 SECONDS_PER_DAY = 86_400
 
-RULE_VERSION = "hos-property-carrying-70-8-v1"
+RULE_VERSION = "hos-property-carrying-70-8-v2"
 SCHEMA_VERSION = "trip-plan-v1"
 
 # Contiguous US approximate bounds (excluding AK/HI)

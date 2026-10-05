@@ -38,21 +38,35 @@ def explain_event(event: TimelineEvent) -> str:
             "is required after 8 hours of driving."
         )
     elif event.event_type == EventType.REST:
-        if ReasonCode.SHIFT_DRIVING_LIMIT in codes:
+        if ReasonCode.SPLIT_SLEEPER_LONG in codes:
             parts.append(
-                "Driving stopped after reaching the 11-hour driving limit. "
-                "A qualifying 10-hour rest starts a new shift."
+                "Split sleeper: at least 7 consecutive hours in the sleeper berth "
+                "(§395.1(g)). This period is excluded from the 14-hour window when "
+                "paired with a later qualifying rest of at least 2 hours."
             )
-        if ReasonCode.SHIFT_WINDOW_LIMIT in codes:
+            parts.append("A new 11/14 calculation period begins after this sleeper period.")
+        elif ReasonCode.SPLIT_SLEEPER_SHORT in codes:
             parts.append(
-                "Driving stopped because the 14-hour window from the first on-duty "
-                "activity expired. Short breaks do not pause this window."
+                "Split sleeper companion rest completes the §395.1(g) pair "
+                "(periods total at least 10 hours). Both paired periods are excluded "
+                "from the 14-hour driving window."
             )
-        if ReasonCode.BREAK_AFTER_DRIVING in codes and ReasonCode.SHIFT_DRIVING_LIMIT not in codes:
-            parts.append("Rest also resets the 8-hour driving interruption clock.")
-        if not parts:
-            parts.append("A qualifying 10-hour rest is required before more driving.")
-        parts.append("Ten hours of rest does not reset the 70-hour/8-day cycle.")
+        else:
+            if ReasonCode.SHIFT_DRIVING_LIMIT in codes:
+                parts.append(
+                    "Driving stopped after reaching the 11-hour driving limit. "
+                    "A qualifying 10-hour rest starts a new shift."
+                )
+            if ReasonCode.SHIFT_WINDOW_LIMIT in codes:
+                parts.append(
+                    "Driving stopped because the 14-hour window from the first on-duty "
+                    "activity expired. Short breaks do not pause this window."
+                )
+            if ReasonCode.BREAK_AFTER_DRIVING in codes and ReasonCode.SHIFT_DRIVING_LIMIT not in codes:
+                parts.append("Rest also resets the 8-hour driving interruption clock.")
+            if not parts:
+                parts.append("A qualifying 10-hour rest is required before more driving.")
+            parts.append("Ten hours of rest does not reset the 70-hour/8-day cycle.")
     elif event.event_type == EventType.RESTART:
         parts.append(
             "A 34-hour restart is required because cycle driving availability is exhausted "

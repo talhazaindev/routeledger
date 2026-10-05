@@ -41,6 +41,8 @@ class ReasonCode(str, Enum):
     DAILY_REST = "DAILY_REST"
     ROUTE_LEG = "ROUTE_LEG"
     PLANNING_FILLER = "PLANNING_FILLER"
+    SPLIT_SLEEPER_LONG = "SPLIT_SLEEPER_LONG"
+    SPLIT_SLEEPER_SHORT = "SPLIT_SLEEPER_SHORT"
 
 
 class LocationProvenance(str, Enum):
@@ -145,6 +147,13 @@ class PlanningSettings:
     rest_status: DutyStatus = DutyStatus.OFF
     sleeper_equipped: bool = False
     cycle_used_s: int = 0
+    # Optional oldest-first daily on-duty totals (seconds), length 1..8.
+    # When set, enables rolling 8-day drop-off; must sum to cycle_used_s.
+    # When None, conservative scalar carry-forward until a 34h restart.
+    cycle_daily_history_s: tuple[int, ...] | None = None
+    # When True with equipped sleeper + SB rest, use §395.1(g) 7+3 split
+    # instead of one consecutive 10h rest block.
+    split_sleeper: bool = False
     # Optional identity fields
     driver_name: str | None = None
     carrier_name: str | None = None

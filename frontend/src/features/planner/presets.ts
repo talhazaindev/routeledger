@@ -13,6 +13,9 @@ export type PlannerFormState = {
   includePretrip: boolean;
   restStatus: "OFF" | "SB";
   sleeperEquipped: boolean;
+  splitSleeper: boolean;
+  /** Oldest-first daily on-duty hours for rolling 8-day mode; empty = conservative. */
+  cycleDailyHistoryHours: string;
   driverName: string;
   carrierName: string;
   mainOffice: string;
@@ -38,6 +41,8 @@ export function defaultFormState(): PlannerFormState {
     includePretrip: false,
     restStatus: "OFF",
     sleeperEquipped: false,
+    splitSleeper: false,
+    cycleDailyHistoryHours: "",
     driverName: "",
     carrierName: "",
     mainOffice: "",
@@ -131,6 +136,10 @@ export const PRESETS: Array<{ id: string; label: string; description: string; ap
 ];
 
 export function formToPayload(form: PlannerFormState) {
+  const historyRaw = form.cycleDailyHistoryHours.trim();
+  const history = historyRaw
+    ? historyRaw.split(/[,\s]+/).filter(Boolean).map((v) => Number(v))
+    : null;
   return {
     current_location: form.current,
     pickup_location: form.pickup,
@@ -143,6 +152,8 @@ export function formToPayload(form: PlannerFormState) {
     include_pretrip_inspection: form.includePretrip,
     rest_status: form.restStatus,
     sleeper_equipped: form.sleeperEquipped,
+    split_sleeper: form.splitSleeper,
+    cycle_daily_history_hours: history,
     driver_name: form.driverName || null,
     carrier_name: form.carrierName || null,
     main_office: form.mainOffice || null,

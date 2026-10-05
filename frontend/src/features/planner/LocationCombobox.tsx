@@ -10,9 +10,19 @@ type Props = {
   value: LocationValue | null;
   onChange: (value: LocationValue | null) => void;
   error?: string;
+  /** When true, omit the numbered badge (parent spine supplies it). */
+  hideNumber?: boolean;
 };
 
-export function LocationCombobox({ id, label, number, value, onChange, error }: Props) {
+export function LocationCombobox({
+  id,
+  label,
+  number,
+  value,
+  onChange,
+  error,
+  hideNumber = false,
+}: Props) {
   const listId = useId();
   const [query, setQuery] = useState(value?.label ?? "");
   const [open, setOpen] = useState(false);
@@ -31,7 +41,6 @@ export function LocationCombobox({ id, label, number, value, onChange, error }: 
       setOptions([]);
       return;
     }
-    // If query matches selected label exactly, don't re-search
     if (value && query === value.label) {
       return;
     }
@@ -67,14 +76,14 @@ export function LocationCombobox({ id, label, number, value, onChange, error }: 
   function onInputChange(next: string) {
     setQuery(next);
     if (value && next !== value.label) {
-      onChange(null); // invalidate coordinates until resolved again
+      onChange(null);
     }
   }
 
   return (
     <div className="space-y-1.5">
       <label htmlFor={id} className="flex items-center gap-2 text-sm font-medium text-text">
-        {number != null && (
+        {!hideNumber && number != null && (
           <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-action text-[11px] font-semibold text-white">
             {number}
           </span>
@@ -82,7 +91,10 @@ export function LocationCombobox({ id, label, number, value, onChange, error }: 
         {label}
       </label>
       <div className="relative">
-        <MapPin className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" aria-hidden />
+        <MapPin
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
+          aria-hidden
+        />
         <input
           id={id}
           role="combobox"
@@ -91,8 +103,11 @@ export function LocationCombobox({ id, label, number, value, onChange, error }: 
           aria-autocomplete="list"
           aria-invalid={!!error}
           className={cn(
-            "w-full rounded-[10px] border bg-surface py-2.5 pl-9 pr-9 text-sm shadow-sm",
-            error ? "border-red-500" : "border-border focus:border-action",
+            "w-full rounded-xl border bg-surface py-2.5 pl-9 pr-9 text-sm outline-none transition",
+            "shadow-[inset_0_1px_2px_rgba(11,21,36,0.04)]",
+            error
+              ? "border-red-500"
+              : "border-border focus:border-action focus:ring-2 focus:ring-action/15",
           )}
           value={query}
           onChange={(e) => onInputChange(e.target.value)}
@@ -117,21 +132,28 @@ export function LocationCombobox({ id, label, number, value, onChange, error }: 
           autoComplete="off"
         />
         {loading && (
-          <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted" aria-hidden />
+          <Loader2
+            className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted"
+            aria-hidden
+          />
         )}
         {open && options.length > 0 && (
           <ul
             id={listId}
             role="listbox"
-            className="absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-[10px] border border-border bg-surface py-1 shadow-lg"
+            className="absolute z-30 mt-1.5 max-h-56 w-full overflow-auto rounded-xl border border-border bg-surface py-1 shadow-[var(--shadow-lift)]"
           >
             {options.map((opt, i) => (
-              <li key={`${opt.label}-${opt.coordinates.lat}-${opt.coordinates.lon}`} role="option" aria-selected={i === active}>
+              <li
+                key={`${opt.label}-${opt.coordinates.lat}-${opt.coordinates.lon}`}
+                role="option"
+                aria-selected={i === active}
+              >
                 <button
                   type="button"
                   className={cn(
-                    "flex w-full flex-col px-3 py-2 text-left text-sm",
-                    i === active ? "bg-bg" : "hover:bg-bg",
+                    "flex w-full flex-col px-3 py-2 text-left text-sm transition",
+                    i === active ? "bg-action/8" : "hover:bg-surface-elevated",
                   )}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => select(opt)}

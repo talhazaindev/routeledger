@@ -107,6 +107,47 @@ def _parse_cycle_hours(raw: Any) -> int:
     return hours_to_seconds(value)
 
 
+def _parse_cycle_history(raw: Any, cycle_used_s: int) -> tuple[int, ...] | None:
+    """Optional oldest-first daily on-duty hours; must sum to cycle_used_hours."""
+    if raw is None or raw == "" or raw == []:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        raise PlanError(
+            "cycle_daily_history_hours must be a list of daily hours",
+            field_errors={"cycle_daily_history_hours": ["Must be a list"]},
+        )
+    if not (1 <= len(raw) <= 8):
+        raise PlanError(
+            "cycle_daily_history_hours must have 1 to 8 entries (oldest first)",
+            field_errors={"cycle_daily_history_hours": ["Length must be 1..8"]},
+        )
+    seconds: list[int] = []
+    for i, item in enumerate(raw):
+        try:
+            value = Decimal(str(item))
+        except (InvalidOperation, ValueError) as exc:
+            raise PlanError(
+                f"Invalid history hours at index {i}",
+                field_errors={"cycle_daily_history_hours": ["Each entry must be a finite number"]},
+            ) from exc
+        if not value.is_finite() or value < 0 or value > 70:
+            raise PlanError(
+                f"Invalid history hours at index {i}",
+                field_errors={"cycle_daily_history_hours": ["Each entry must be 0..70"]},
+            )
+        seconds.append(hours_to_seconds(value))
+    if sum(seconds) != cycle_used_s:
+        raise PlanError(
+            "cycle_daily_history_hours must sum to Current Cycle Used",
+            field_errors={
+                "cycle_daily_history_hours": [
+                    "Sum of daily hours must equal cycle_used_hours"
+                ]
+            },
+        )
+    return tuple(seconds)
+
+
 def create_trip_plan(payload: dict[str, Any]) -> tuple[TripPlan, str]:
     """Validate → route → schedule → validate → persist. Returns plan and raw token."""
     current_label, current_coords = _parse_location(payload.get("current_location"), "current_location")
@@ -172,6 +213,15 @@ def create_trip_plan(payload: dict[str, Any]) -> tuple[TripPlan, str]:
             field_errors={"rest_status": ["Enable sleeper berth equipped"]},
         )
 
+    split_sleeper = bool(payload.get("split_sleeper", False))
+    if split_sleeper and not (sleeper and rest_status_raw == "SB"):
+        raise PlanError(
+            "Split sleeper requires equipped sleeper berth and rest status SB",
+            field_errors={"split_sleeper": ["Enable sleeper and set rest status to SB"]},
+        )
+
+    cycle_history = _parse_cycle_history(payload.get("cycle_daily_history_hours"), cycle_used_s)
+
     plan_settings = PlanningSettings(
         departure_local=departure,
         home_terminal_tz=tz_name,
@@ -181,6 +231,8 @@ def create_trip_plan(payload: dict[str, Any]) -> tuple[TripPlan, str]:
         rest_status=DutyStatus.SB if rest_status_raw == "SB" else DutyStatus.OFF,
         sleeper_equipped=sleeper,
         cycle_used_s=cycle_used_s,
+        cycle_daily_history_s=cycle_history,
+        split_sleeper=split_sleeper,
         driver_name=payload.get("driver_name") or None,
         carrier_name=payload.get("carrier_name") or None,
         main_office=payload.get("main_office") or None,
@@ -286,12 +338,17 @@ def plan_to_response(plan: TripPlan, *, include_token: str | None = None) -> dic
         "validation": plan.validation_json,
         "provider": plan.provider_meta,
         "assumptions": {
-            "cycle_mode": "Conservative cycle estimate",
+            "cycle_mode": (
+                "Rolling 8-day history"
+                if (plan.input_json or {}).get("cycle_daily_history_hours")
+                else "Conservative cycle estimate"
+            ),
             "property_carrying": True,
             "cycle": "70 hours / 8 days",
             "fuel_interval_miles": 1000,
             "pickup_dropoff_hours": 1,
             "fresh_shift": True,
+            "split_sleeper": bool((plan.input_json or {}).get("split_sleeper")),
             "banner": "Planned driver log — not a certified ELD record.",
         },
         "map": {

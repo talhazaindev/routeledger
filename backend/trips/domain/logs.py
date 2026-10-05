@@ -293,7 +293,28 @@ def _totals(segments: list[StatusSegment]) -> dict[str, int]:
 
 
 def _recap(day_duty_s: int, settings: PlanningSettings) -> dict[str, Any]:
-    """Conservative cycle recap — unknown history labeled."""
+    """Cycle recap — rolling history when supplied, otherwise conservative labels."""
+    if settings.cycle_daily_history_s is not None:
+        hist = list(settings.cycle_daily_history_s)
+        return {
+            "on_duty_hours_today_s": day_duty_s,
+            "cycle_mode": "rolling_history",
+            "hours_70_8": {
+                "prior_daily_on_duty_s": hist,
+                "A_total_last_7_including_today": "See generated duty + prior history",
+                "B_available_tomorrow": "Computed from rolling 8-day window",
+                "C_total_last_8_including_today": sum(hist) + day_duty_s,
+                "note": (
+                    "Rolling 8-day history was supplied. Oldest day drops off at each "
+                    "home-terminal midnight; a 34-hour restart still zeroes the cycle."
+                ),
+            },
+            "hours_60_7": {
+                "applicable": False,
+                "note": "60-hour/7-day option is not applicable for this planner.",
+            },
+            "initial_cycle_used_s": settings.cycle_used_s,
+        }
     return {
         "on_duty_hours_today_s": day_duty_s,
         "cycle_mode": "conservative_estimate",

@@ -1,114 +1,126 @@
 # RouteLedger
 
-Assessment-quality US trucking trip planner with planned daily driver log sheets.
+US trucking trip planner that builds FMCSA-style daily logs from a route, pickup/dropoff, cycle hours, and departure time. The React UI shows the map, itinerary, directions, and printable/PDF log sheets; the Django API persists immutable trip plans and handles geocoding and routing.
 
-**Django 5.2.17 + React 19 + Vite + PostgreSQL/SQLite.** Generates a routed map, fuel/rest stops, itinerary, and SVG/PDF daily logs from current → pickup → dropoff and current cycle used hours.
+## Stack
 
-> Planned driver log — not a certified ELD record.
+| Layer    | Tech |
+| -------- | ---- |
+| Frontend | React 19, Vite, Tailwind CSS, Leaflet, TanStack Query |
+| Backend  | Django 5, Django REST Framework, drf-spectacular |
+| Routing  | OpenRouteService / HeiGIT (optional fake provider for local dev) |
+| Database | SQLite locally when `DATABASE_URL` is unset; PostgreSQL in production |
 
-## Supported scope
+## Prerequisites
 
-- Property-carrying driver, **70 hours / 8 days**
-- Contiguous United States only
-- Fresh shift at departure; **Conservative cycle estimate** (scalar cycle total carried until a 34-hour restart)
-- Fuel at least every 1,000 miles (default stop 30 minutes)
-- Pickup and dropoff each 1 hour on-duty
-- Home-terminal timezone for all log axes (default `America/Chicago`)
-- DST transition days in the home-terminal zone are **unsupported** (change departure)
-- HGV routing via OpenRouteService `driving-hgv` (truck suitability not guaranteed)
+- Python 3.12+
+- Node.js 20+ (for the frontend)
+- An [HeiGIT / OpenRouteService API key](https://account.heigit.org/) for real routes (or use fake geometry locally)
 
-See [ASSUMPTIONS.md](ASSUMPTIONS.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md).
+## Quick start (local)
 
-## Required keys
+1. **Environment**
 
-| Variable | Where to obtain |
-| --- | --- |
-| `OPENROUTESERVICE_API_KEY` | [HeiGIT account](https://account.heigit.org/) — free Standard plan |
-| `ORS_BASE_URL` | Must be `https://api.heigit.org/openrouteservice` |
-| `ORS_GEOCODE_BASE_URL` | Must be `https://api.heigit.org/pelias/v1` (geocoding moved off `/geocode`) |
+   ```bash
+   cp .env.example .env
+   ```
 
-**Verified Standard quotas (2026):** Directions 2,000/day · 40/min; Geocoding 3,000/day · 100/min; max driving distance 6,000 km.
+   Edit `.env` as needed. For UI-only development without an ORS key, set `USE_FAKE_PROVIDER=true`.
 
-For local UI work without a key, set `USE_FAKE_PROVIDER=true` (approximate geometry labeled as fake).
+2. **Backend**
 
-## Local setup
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate   # Windows: .venv\Scripts\activate
+   pip install -r backend/requirements.txt
+   cd backend
+   python manage.py migrate
+   python manage.py runserver
+   ```
 
-```bash
-# Python 3.12
-cd RouteLedger
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-cp .env.example .env
-# Edit .env — set USE_FAKE_PROVIDER=true or add OPENROUTESERVICE_API_KEY
+   API: `http://127.0.0.1:8000`  
+   OpenAPI schema: `/api/schema/` · Swagger UI: `/api/docs/`
 
-cd backend
-python manage.py migrate
-python manage.py runserver 8000
-```
+3. **Frontend** (separate terminal)
 
-```bash
-# Frontend (second terminal)
-cd frontend
-npm install
-npm run dev
-```
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
 
-Open http://127.0.0.1:5173 — Vite proxies `/api` to Django.
+   App: `http://127.0.0.1:5173` (Vite proxies `/api` to the backend)
 
-### Docker (optional)
+## Docker Compose (API + PostgreSQL)
+
+Runs the API with Postgres and fake routing by default:
 
 ```bash
 docker compose up --build
 ```
 
-## Tests
+API on port `8000`. Set `OPENROUTESERVICE_API_KEY` in your shell or `.env` if you want real ORS calls inside Compose.
 
-```bash
-# Backend
-source .venv/bin/activate
-cd backend && USE_FAKE_PROVIDER=true pytest
+## Environment variables
 
-# Frontend unit
-cd frontend && npm test
+See [`.env.example`](.env.example) for the full list. Important entries:
 
-# Playwright (starts API + Vite if needed)
-cd frontend && npx playwright install chromium
-cd frontend && npm run test:e2e
-```
+- `OPENROUTESERVICE_API_KEY` — required for real geocoding/routing when `USE_FAKE_PROVIDER=false`
+- `ORS_BASE_URL` / `ORS_GEOCODE_BASE_URL` — HeiGIT endpoints (defaults in `.env.example`)
+- `DATABASE_URL` — PostgreSQL connection string (production); omit for SQLite
+- `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` — must include your frontend origin
 
-## Production build
+## API overview
 
-```bash
-cd frontend && npm run build
-cd backend && DJANGO_DEBUG=false python manage.py check --deploy
-```
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET | `/api/health/` | Health check |
+| GET | `/api/locations/search/?q=` | Location autocomplete |
+| POST | `/api/trips/` | Create trip plan |
+| GET | `/api/trips/{id}/` | Load plan (Bearer access token) |
+
+Detailed contract: [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Deployment
 
-Preferred: **Vercel** (frontend) + **Render** (Django) + managed PostgreSQL.
+Deploy the **frontend on Vercel** and the **API on Render**. Do not deploy the repo root to Vercel — the root `Dockerfile` is for the Django API and will crash there (wrong port / no DB).
 
-1. Create a HeiGIT API key.
-2. Deploy backend with `render.yaml` (or equivalent). Set `DJANGO_ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `DATABASE_URL`, `OPENROUTESERVICE_API_KEY`, `USE_FAKE_PROVIDER=false`, `DJANGO_DEBUG=false`.
-3. Deploy `frontend/` to Vercel. Update `frontend/vercel.json` rewrite destination to the Render API host.
-4. Confirm `/api/health/` through the frontend domain, create a trip, open logs, download PDF.
+### 1. Backend (Render)
 
-**Cold start:** Render free web services sleep. Expect ~30–60s for the first request after idle; use an always-on tier for assessment day if available.
+[`render.yaml`](render.yaml) defines a web service (`backend/`) and PostgreSQL database.
 
-**Hosting status:** Live production URLs are not claimed in this repository until accounts and keys are authorized. Remaining blockers: ORS key, GitHub auth, Vercel/Render login.
+1. Create a new Render Blueprint from this repo (or connect the repo and use `render.yaml`).
+2. In the Render dashboard, set:
+   - `OPENROUTESERVICE_API_KEY`
+   - `DJANGO_ALLOWED_HOSTS` — your Render hostname (e.g. `routeledger-api.onrender.com`)
+   - `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` — your Vercel origin (e.g. `https://routeledger-six.vercel.app`)
+3. Note the public API URL (e.g. `https://routeledger-api.onrender.com`).
 
-## AI configuration
+### 2. Frontend (Vercel)
 
-`AI_INSIGHTS_ENABLED=false` by default. Baseline uses deterministic “Why this stop?” explanations only. Optional LLM explainer is deferred.
+1. Import the repo in Vercel.
+2. Set **Root Directory** to `frontend` (Framework Preset: Vite).
+3. Build command: `npm run build` · Output: `dist`.
+4. In [`frontend/vercel.json`](frontend/vercel.json), replace `REPLACE_WITH_RENDER_HOST` with your Render hostname (no trailing slash), then redeploy. Example:
 
-## API
+   ```json
+   "destination": "https://routeledger-api.onrender.com/api/$1"
+   ```
 
-- `GET /api/health/`
-- `GET /api/locations/search/?q=`
-- `POST /api/trips/`
-- `GET /api/trips/{id}/` with `Authorization: Bearer <token>`
-- OpenAPI: `/api/schema/` · Swagger: `/api/docs/`
+API calls from the UI (`/api/...`) are proxied to Render via that rewrite.
 
-## Loom walkthrough
+## Project layout
 
-See [LOOM_SCRIPT.md](LOOM_SCRIPT.md). Do not invent a Loom URL unless a recording exists.
+```
+RouteLedger/
+├── backend/          # Django project (trips domain, API, ORS client)
+├── frontend/         # Vite React app
+├── docs/             # OpenAPI spec
+├── docker-compose.yml
+├── Dockerfile        # API image
+└── .env.example
+```
+
+## License
+
+Proprietary unless otherwise noted in repository metadata.
